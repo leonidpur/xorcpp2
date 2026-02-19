@@ -16,7 +16,7 @@ void run_training(const OperatingMode& mode) {
     for (size_t i = 0; i < 4; ++i) target->data[i] = tgt_vals[i];
 
     Model model(2, 2, 1);
-    std::vector<std::shared_ptr<Tensor>> params;
+    auto params = model.parameters();
     SGD optimizer(params, 0.1f);
 
     Training trainer;

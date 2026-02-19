@@ -18,6 +18,8 @@ public:
           b(TensorUtils::make_tensor(1, _cols)),
           is_sigmoid(_is_sigmoid),
           layer_index(_layer_index) {
+        w->requires_grad = true;
+        b->requires_grad = true;
         static thread_local std::mt19937 rng(42);
         std::uniform_int_distribution<int> sign_dist(0, 1);
         for (size_t i = 0; i < w->data.size(); ++i) {
@@ -44,7 +46,7 @@ public:
             w->print_tensor(w_label.c_str());
             b->print_tensor(b_label.c_str());
         }
-        auto z = TensorUtils::fused_linear_op(input, w, b, update_input, mode.print_temp);
+        auto z = TensorUtils::fused_linear_op(input, w, b, update_input, false);
         auto a = is_sigmoid ? TensorUtils::sigmoid(z) : TensorUtils::relu(z);
         if (mode.print_temp) {
             const std::string z_label = "{" + std::to_string(layer_index) + "} z";
@@ -53,6 +55,10 @@ public:
             a->print_tensor(a_label.c_str());
         }
         return a;
+    }
+
+    std::vector<std::shared_ptr<Tensor>> parameters() const {
+        return {w, b};
     }
 };
 
@@ -75,6 +81,15 @@ public:
         auto hidden_a = layers[0].forward_fused(input, false, mode);
         auto y_hat = layers[1].forward_fused(hidden_a, true, mode);
         return y_hat;
+    }
+
+    std::vector<std::shared_ptr<Tensor>> parameters() const {
+        std::vector<std::shared_ptr<Tensor>> params;
+        for (const auto& layer : layers) {
+            auto layer_params = layer.parameters();
+            params.insert(params.end(), layer_params.begin(), layer_params.end());
+        }
+        return params;
     }
 
 };

@@ -97,13 +97,26 @@ public:
             Optimizer &optimizer,
             LossFn loss_fn,
             const OperatingMode& mode=OperatingMode{}) {
-        const size_t max_epoch=1000;
+        const size_t max_epoch = mode.max_epoch;
         for(auto epoch=0;epoch<max_epoch;epoch++) {
             if (mode.print_epoch) {
-                std::cout << "---------------\n";
+                std::cout << "--------------- epoch " << epoch << "\n";
             }
             const auto yhat = model.forward_fused(input, mode);
+            std::cout << "forward done.\n";
             auto loss = loss_fn(yhat, target);
+            if (mode.print_temp) {
+                loss->print_tensor("loss");
+            }
+            const double loss_val = loss->data.empty() ? 0.0 : loss->data[0];
+            bool all_correct = true;
+            for (size_t i = 0; i < target->data.size(); ++i) {
+                const double pred = yhat->data[i] >= 0.5 ? 1.0 : 0.0;
+                if (pred != target->data[i]) {
+                    all_correct = false;
+                    break;
+                }
+            }
 
             auto topo = TensorUtils::build_topo(loss);
             if (loss->grads.empty())
@@ -112,9 +125,23 @@ public:
             for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
                 if ((*it)->backward_fn) (*it)->backward_fn();
             }
-
+            if (mode.print_temp) {
+                std::cout << "grads\n";
+                for (const auto& node : topo) {
+                    if (!node) continue;
+                    if (node->requires_grad) {
+                        node->print_tensor("grad");
+                    }
+                }
+            }
+            std::cout << "backward done.\n";
             optimizer.step();
             optimizer.zero_grad();
+
+            if (loss_val < mode.loss_threshold && all_correct) {
+                std::cout << "satisfied\n";
+                break;
+            }
         }
     }
 

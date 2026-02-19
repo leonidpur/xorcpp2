@@ -175,7 +175,7 @@ public:
         shared_ptr<Tensor> ret = make_tensor(
             x->rows,
             w->cols,
-            w->requires_grad || b->requires_grad,
+            x->requires_grad || w->requires_grad || b->requires_grad,
             {x, w, b}
         );
         for(int r=0;r<x->rows;r++)
@@ -196,11 +196,10 @@ public:
                 }
                 ret->set(r, c, sum);
             }
-        ret->requires_grad = w->requires_grad = b->requires_grad = true;
-        x->requires_grad = update_x;
-        if(ret->requires_grad && (x->requires_grad||w->requires_grad||b->requires_grad))
-            ret->backward_fn = [ret, x, w, b]{
-                if(x->requires_grad) {
+        const bool track_x = update_x && x->requires_grad;
+        if(ret->requires_grad && (track_x||w->requires_grad||b->requires_grad))
+            ret->backward_fn = [ret, x, w, b, track_x]{
+                if(track_x) {
                     for(size_t r_x=0; r_x < x->rows; r_x++)
                         for(size_t c_x=0; c_x < x->cols; c_x++) {
                             double sum = 0.0;
