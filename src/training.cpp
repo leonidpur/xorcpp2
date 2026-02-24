@@ -2,8 +2,8 @@
 #include <iostream>
 
 void run_training(const OperatingMode& mode) {
-    auto input = TensorUtils::make_tensor(4, 2);
-    auto target = TensorUtils::make_tensor(4, 1);
+    auto input = TensorUtils::make_tensor(4, 2, false, {}, "input");
+    auto target = TensorUtils::make_tensor(4, 1, false, {}, "target");
 
     const double in_vals[8] = {
         0.0, 0.0,
@@ -18,9 +18,10 @@ void run_training(const OperatingMode& mode) {
     Model model(2, 2, 1);
     auto params = model.parameters();
     SGD optimizer(params, 0.1f);
+    BinaryClassificationObjective objective;
 
     Training trainer;
-    trainer.train(input, target, model, optimizer, bce_prob, mode);
+    trainer.train(input, target, model, optimizer, objective, mode);
 
     std::cout << "training done\n";
 }

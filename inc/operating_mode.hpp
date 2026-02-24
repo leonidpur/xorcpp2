@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 class OperatingMode {
 public:
     bool print_params = false;

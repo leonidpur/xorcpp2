@@ -1,16 +1,11 @@
 #pragma once
 
+#include "display_layout.hpp"
 #include "model.hpp"
+#include "objective.hpp"
 #include "operating_mode.hpp"
 #include <algorithm>
-#include <cmath>
 #include <iostream>
-#include <stdexcept>
-
-using LossFn =
-    std::function<std::shared_ptr<Tensor>(
-        const std::shared_ptr<Tensor>&,
-        const std::shared_ptr<Tensor>&)>;
 
 
 struct Optimizer {
@@ -44,80 +39,31 @@ struct SGD : Optimizer {
 };
 
 
-static inline std::shared_ptr<Tensor> bce_prob(
-    const std::shared_ptr<Tensor>& p,
-    const std::shared_ptr<Tensor>& y
-) {
-    if (p->rows != y->rows || p->cols != y->cols)
-        throw std::runtime_error("BCE: shape mismatch");
-
-    const double eps = 1e-7;
-    const int N = p->rows * p->cols;
-
-    auto loss = TensorUtils::make_tensor(1, 1, true, {p, y});
-    loss->data.assign(1, 0.0);
-    loss->grads.assign(1, 0.0);
-
-    // forward: mean BCE
-    double sum = 0.0;
-    for (int i = 0; i < N; ++i) {
-        double pi = std::clamp<double>(p->data[i], eps, 1.0 - eps);
-        double yi = y->data[i]; // expect 0 or 1
-        sum += -(yi * std::log(pi) + (1.0 - yi) * std::log(1.0 - pi));
-    }
-    loss->data[0] = sum / static_cast<double>(N);
-
-    // backward: dL/dp = (-(y/p) + (1-y)/(1-p)) / N
-    loss->backward_fn = [loss, p, y, N, eps]() {
-        const double g = loss->grads[0] / static_cast<double>(N); // mean reduction
-
-        if (p->requires_grad) {
-            if (p->grads.size() != p->data.size())
-                p->grads.assign(p->data.size(), 0.0);
-
-            for (int i = 0; i < N; ++i) {
-                double pi = std::clamp<double>(p->data[i], eps, 1.0 - eps);
-                double yi = y->data[i];
-
-                double dLdp = (-(yi / pi) + (1.0 - yi) / (1.0 - pi));
-                p->grads[i] += dLdp * g;
-            }
-        }
-        // usually target y has requires_grad=false, so we skip y.grad
-    };
-
-    return loss;
-}
-
-
 class Training {
 public:
     void train(const std::shared_ptr<Tensor>& input,
                  const std::shared_ptr<Tensor>& target, Model &model, 
             Optimizer &optimizer,
-            LossFn loss_fn,
+            Objective &objective,
             const OperatingMode& mode=OperatingMode{}) {
         const size_t max_epoch = mode.max_epoch;
         for(auto epoch=0;epoch<max_epoch;epoch++) {
-            if (mode.print_epoch) {
-                std::cout << "--------------- epoch " << epoch << "\n";
-            }
-            const auto yhat = model.forward_fused(input, mode);
-            std::cout << "forward done.\n";
-            auto loss = loss_fn(yhat, target);
-            if (mode.print_temp) {
-                loss->print_tensor("loss");
-            }
+            DisplayLayout layout;
+            layout.start_epoch(static_cast<size_t>(epoch));
+            const auto p = model.forward_fused(input, mode, &layout, &objective);
+            auto loss = objective.calculate_loss(p, target);
+            if (mode.print_temp) layout.add_loss(loss);
             const double loss_val = loss->data.empty() ? 0.0 : loss->data[0];
             bool all_correct = true;
             for (size_t i = 0; i < target->data.size(); ++i) {
-                const double pred = yhat->data[i] >= 0.5 ? 1.0 : 0.0;
+                const double pred = p->data[i] >= 0.5 ? 1.0 : 0.0;
                 if (pred != target->data[i]) {
                     all_correct = false;
                     break;
                 }
             }
 
+            objective.backprop(loss);
             auto topo = TensorUtils::build_topo(loss);
             if (loss->grads.empty())
                 loss->grads.assign(loss->data.size(), 0.0);
@@ -126,17 +72,16 @@ public:
                 if ((*it)->backward_fn) (*it)->backward_fn();
             }
             if (mode.print_temp) {
-                std::cout << "grads\n";
                 for (const auto& node : topo) {
                     if (!node) continue;
                     if (node->requires_grad) {
-                        node->print_tensor("grad");
+                        layout.add_grad(node);
                     }
                 }
             }
-            std::cout << "backward done.\n";
             optimizer.step();
             optimizer.zero_grad();
+            layout.flush(mode);
 
             if (loss_val < mode.loss_threshold && all_correct) {
                 std::cout << "satisfied\n";

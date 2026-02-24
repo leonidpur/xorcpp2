@@ -1,11 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <unordered_set>
 #include <sstream>
+#include <string>
+#include <unordered_set>
 #include <vector>
 #include <memory>
 #include <functional>
@@ -20,6 +22,7 @@ public:
     const size_t cols;
     vector<shared_ptr<Tensor>> parents;
     bool requires_grad;
+    std::string name;
     function<void()> backward_fn;
 
 public:
@@ -45,10 +48,7 @@ public:
         fill(grads.begin(), grads.end(), 0.0);
     }
 
-    void print_tensor(const char* name = nullptr) const {
-        if (name && name[0] != '\0') {
-            std::cout << name << " (" << rows << "x" << cols << ")\n";
-        }
+    std::vector<std::string> format_rows() const {
         std::vector<std::string> cells;
         cells.reserve(rows * cols);
         size_t width = 0;
@@ -61,13 +61,27 @@ public:
                 cells.push_back(s);
             }
         }
+        std::vector<std::string> rows_out;
+        rows_out.reserve(rows);
         size_t idx = 0;
         for (size_t r = 0; r < rows; r++) {
+            std::ostringstream line;
             for (size_t c = 0; c < cols; c++) {
-                if (c > 0) std::cout << ' ';
-                std::cout << std::setw(static_cast<int>(width)) << cells[idx++];
+                if (c > 0) line << ' ';
+                line << std::setw(static_cast<int>(width)) << cells[idx++];
             }
-            std::cout << '\n';
+            rows_out.push_back(line.str());
+        }
+        return rows_out;
+    }
+
+    void print_tensor(const char* name = nullptr) const {
+        if (name && name[0] != '\0') {
+            std::cout << name << " (" << rows << "x" << cols << ")\n";
+        }
+        const auto rows_out = format_rows();
+        for (const auto& line : rows_out) {
+            std::cout << line << '\n';
         }
     }
 };
@@ -79,24 +93,28 @@ public:
         size_t rows,
         size_t cols,
         bool requires_grad=false,
-        const vector<shared_ptr<Tensor>>& parents={}
+        const vector<shared_ptr<Tensor>>& parents={},
+        const std::string& base_name="tensor"
     ) {
+        static std::atomic<size_t> s_id{0};
         auto ret = make_shared<Tensor>(rows, cols, requires_grad);
         ret->requires_grad = requires_grad;
         ret->parents = parents;
+        ret->name = base_name + "-" + std::to_string(s_id.fetch_add(1));
         return ret;
     }
 
     static shared_ptr<Tensor> matmul(const shared_ptr<Tensor> &a, 
         const shared_ptr<Tensor> &b) {
         if(a->cols != b->rows)
-            return make_tensor(0, 0);
+            return make_tensor(0, 0, false, {}, "matmul");
 
         shared_ptr<Tensor> ret = make_tensor(
             a->rows,
             b->cols,
             a->requires_grad || b->requires_grad,
-            {a, b}
+            {a, b},
+            "matmul"
         );
         for(int r=0;r<a->rows;r++)
             for(int c=0;c<b->cols;c++) {
@@ -133,13 +151,14 @@ public:
     static shared_ptr<Tensor> add(const shared_ptr<Tensor> &a, 
         const shared_ptr<Tensor> &b) {
         if(a->rows != b->rows || a->cols != b->cols)
-            return make_tensor(0, 0);
+            return make_tensor(0, 0, false, {}, "add");
 
         shared_ptr<Tensor> ret = make_tensor(
             a->rows,
             a->cols,
             a->requires_grad || b->requires_grad,
-            {a, b}
+            {a, b},
+            "add"
         );
         for(int r=0;r < a->rows;r++)
             for(int c=0;c < a->cols;c++)
@@ -170,13 +189,14 @@ public:
         bool print_calc=false
     ) {
         if(x->cols != w->rows || w->cols != b->cols)
-            return make_tensor(0, 0);
+            return make_tensor(0, 0, false, {}, "fused_linear");
 
         shared_ptr<Tensor> ret = make_tensor(
             x->rows,
             w->cols,
             x->requires_grad || w->requires_grad || b->requires_grad,
-            {x, w, b}
+            {x, w, b},
+            "fused_linear"
         );
         for(int r=0;r<x->rows;r++)
             for(int c=0;c<w->cols;c++) {
@@ -236,7 +256,8 @@ public:
             a->rows,
             a->cols,
             a->requires_grad,
-            {a}
+            {a},
+            "relu"
         );
         for(size_t r=0;r<a->rows;r++)
             for(size_t c=0;c<a->cols;c++)
@@ -257,7 +278,8 @@ public:
             a->rows,
             a->cols,
             a->requires_grad,
-            {a}
+            {a},
+            "sigmoid"
         );
         for (size_t r = 0; r < a->rows; r++)
             for (size_t c = 0; c < a->cols; c++) {
@@ -290,5 +312,38 @@ public:
         };
         dfs(root);
         return topo;
+    }
+
+    static void print_side_by_side(
+        const std::shared_ptr<Tensor>& left,
+        const char* left_label,
+        const std::shared_ptr<Tensor>& right,
+        const char* right_label
+    ) {
+        const std::string left_header =
+            std::string(left_label ? left_label : "") + " (" +
+            std::to_string(left->rows) + "x" + std::to_string(left->cols) + ")";
+        const std::string right_header =
+            std::string(right_label ? right_label : "") + " (" +
+            std::to_string(right->rows) + "x" + std::to_string(right->cols) + ")";
+
+        const auto left_rows = left->format_rows();
+        const auto right_rows = right->format_rows();
+
+        size_t left_width = left_header.size();
+        for (const auto& row : left_rows) {
+            if (row.size() > left_width) left_width = row.size();
+        }
+
+        std::cout << std::setw(static_cast<int>(left_width)) << left_header
+                  << " | " << right_header << "\n";
+
+        const size_t max_rows = std::max(left_rows.size(), right_rows.size());
+        for (size_t r = 0; r < max_rows; r++) {
+            const std::string left_row = (r < left_rows.size()) ? left_rows[r] : "";
+            const std::string right_row = (r < right_rows.size()) ? right_rows[r] : "";
+            std::cout << std::setw(static_cast<int>(left_width)) << left_row
+                      << " | " << right_row << "\n";
+        }
     }
 };
